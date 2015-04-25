@@ -1,7 +1,16 @@
 package chmap
 
+import "hash/fnv"
+
 //impl Imap
 type Chmap struct {
+	//	kv map[string]interface{}
+	//	request chan mission
+	innerMaps []innerMap
+	shardNum  int
+}
+
+type innerMap struct {
 	kv map[string]interface{}
 	request chan mission
 }
@@ -22,20 +31,32 @@ type mission struct{
 }
 
 func NewMap() Chmap {
-	v := Chmap{make(map[string]interface{}), make(chan mission)}
-	go v.init()
+	//	v := Chmap{make(map[string]interface{}), make(chan mission)}
+	v := Chmap{}
+	v.shardNum = 16
+	v.innerMaps = make([]innerMap, v.shardNum, v.shardNum)
+	for i := 0; i < v.shardNum; i++ {
+		v.innerMaps[i] = innerMap{make(map[string]interface{}), make(chan mission)}
+		go v.innerMaps[i].init()
+	}
 	return v
 }
 
+//func NewMap(int shardNum) Chmap{
+//	return nil
+//}
+
+func (m *Chmap) getShard(k string) uint {
+	h := fnv.New32()
+	h.Write([]byte(k))
+	return uint(h.Sum32()) % uint(m.shardNum)
+}
+
 func (m *Chmap) Delete(k string) {
-	m.request <- mission { DEL, kv{k, nil} }
+	m.innerMaps[m.getShard(k)].request <- mission { DEL, kv{k, nil} }
 }
 
-func (m *Chmap) ErrorPut(k string, v interface{}) {
-	m.kv[k] = v
-}
-
-func (m *Chmap) init() {
+func (m *innerMap) init() {
 	for mission := range m.request {
 		switch mission.mission_type {
 		case DEL:
@@ -46,19 +67,24 @@ func (m *Chmap) init() {
 	}
 }
 
-func (m *Chmap) Get(k string) interface{} {
-	return m.kv[k]
+func (m *Chmap) Get(k string) (interface{}, bool) {
+	v , ok := m.innerMaps[m.getShard(k)].kv[k]
+	return v, ok
 }
 
 func (m *Chmap) Put(k string, v interface{}) {
-	m.request <- mission {PUT, kv{k, v}}
+	m.innerMaps[m.getShard(k)].request <- mission {PUT, kv{k, v}}
 }
 
 func (m *Chmap) Count() int {
-	return len(m.kv)
+	re := 0
+	for i := 0; i < m.shardNum; i++ {
+		re += len(m.innerMaps[i].kv)
+	}
+	return re
 }
 
 func (m *Chmap) Contain(k string) bool {
-	_, ok = m.kv[k]
+	_, ok := m.innerMaps[m.getShard(k)].kv[k]
 	return ok
 }
